@@ -1,0 +1,3 @@
+version: 1
+name: "Environment Impact Dashboard"
+description: "A dashboard for visualizing environment impact data."
