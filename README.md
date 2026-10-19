@@ -1,4 +1,4 @@
-# EnvImpact Dashboard
+# Env Impact Dashboard
 
 Streamlit app for estimating environmental impact through EcoLogits.
 
