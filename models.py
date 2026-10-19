@@ -160,7 +160,7 @@ class ImpactRecord(BaseModel):
             "electricity_mix_zone": electricity_mix_zone,
             "resolution_status": resolution_status,
             "resolution_notes": resolution_notes,
-            "estimation_warnings": estimation_result.warnings,
+            "estimation_warnings": [warning.model_dump() for warning in estimation_result.warnings],
             "estimation_errors": estimation_result.errors,
             "source_payload_excerpt": parsed_payload.raw_payload_excerpt,
         }
