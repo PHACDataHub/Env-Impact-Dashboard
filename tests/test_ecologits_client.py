@@ -68,3 +68,15 @@ def test_ecologits_client_fetches_catalog_and_estimation() -> None:
     assert estimation.warnings[0].code == "model-arch-not-released"
 
     client.close()
+
+
+def test_ecologits_client_ignores_non_metric_impact_entries() -> None:
+    client = EcoLogitsClient(transport=httpx.MockTransport(_mock_transport))
+
+    estimation = client.estimate(
+        EstimationRequest(provider="openai", model_name="gpt-4o-mini", output_token_count=42)
+    )
+
+    assert "warnings" not in estimation.metrics
+    assert "errors" not in estimation.metrics
+    client.close()
