@@ -19,6 +19,16 @@ def _find_first(payload: dict[str, Any], paths: list[tuple[str, ...]]) -> Any:
     return None
 
 
+def _parse_optional_int(value: Any, field_name: str, messages: list[str]) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        messages.append(f"{field_name} was present but not an integer; ignored.")
+        return None
+
+
 def parse_inference_payload(raw_text: str, runtime_vendor: RuntimeVendor) -> ParsedInferencePayload:
     messages: list[str] = []
     if not raw_text.strip():
@@ -86,6 +96,10 @@ def parse_inference_payload(raw_text: str, runtime_vendor: RuntimeVendor) -> Par
     if total_tokens is None:
         messages.append("Total tokens not found; optional for record keeping.")
 
+    output_tokens = _parse_optional_int(output_tokens, "Output tokens", messages)
+    prompt_tokens = _parse_optional_int(prompt_tokens, "Prompt tokens", messages)
+    total_tokens = _parse_optional_int(total_tokens, "Total tokens", messages)
+
     if isinstance(latency_seconds, (int, float)) and latency_seconds > 1000:
         latency_seconds = float(latency_seconds) / 1000.0
     elif latency_seconds is not None:
@@ -101,9 +115,9 @@ def parse_inference_payload(raw_text: str, runtime_vendor: RuntimeVendor) -> Par
         runtime_deployment=str(runtime_deployment) if runtime_deployment else None,
         response_model=str(response_model) if response_model else None,
         response_provider_hint=str(provider_hint) if provider_hint else None,
-        output_tokens=int(output_tokens) if output_tokens is not None else None,
-        prompt_tokens=int(prompt_tokens) if prompt_tokens is not None else None,
-        total_tokens=int(total_tokens) if total_tokens is not None else None,
+        output_tokens=output_tokens,
+        prompt_tokens=prompt_tokens,
+        total_tokens=total_tokens,
         latency_seconds=latency_seconds,
         raw_payload_excerpt=raw_text[:2000],
         parse_messages=messages,

@@ -52,6 +52,8 @@ class EcoLogitsClient:
 
         metrics: dict[str, ImpactMetric] = {}
         for key, metric_payload in impacts_payload.items():
+            if key in {"warnings", "errors"}:
+                continue
             if not isinstance(metric_payload, dict):
                 continue
             if "value" in metric_payload and "unit" in metric_payload and isinstance(metric_payload["value"], dict):
