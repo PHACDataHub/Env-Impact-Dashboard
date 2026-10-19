@@ -38,5 +38,5 @@ def test_saved_history_uses_unique_display_columns(monkeypatch) -> None:
     assert displayed[0].columns.tolist()[2:5] == [
         "Runtime model",
         "Provider",
-        "EcoLogits model",
+        "Model",
     ]

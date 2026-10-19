@@ -105,7 +105,7 @@ def _summarize_history(records_df: pd.DataFrame) -> None:
         "runtime_vendor": "Source",
         "response_model": "Runtime model",
         "eco_provider": "Provider",
-        "eco_model_name": "EcoLogits model",
+        "eco_model_name": "Model",
         "output_tokens": "Output tokens",
         "impact_gwp_min": "GWP min (kgCO2eq)",
         "impact_gwp_max": "GWP max (kgCO2eq)",
@@ -172,7 +172,16 @@ if estimation_mode == "Endpoint estimate":
     st.subheader("Endpoint estimate")
     endpoint_runtime = st.selectbox("Endpoint type", options=["azure", "databricks"], index=0)
     endpoint_url = st.text_input("Endpoint URL")
-    endpoint_model = st.text_input("Model / deployment name")
+    endpoint_deployment = st.text_input("Deployment name")
+    endpoint_model_options = [
+        model
+        for models in catalog_snapshot.values()
+        for model in models
+    ]
+    if endpoint_model_options:
+        endpoint_model = st.selectbox("Model", endpoint_model_options, index=0)
+    else:
+        endpoint_model = st.text_input("Model")
     endpoint_output_tokens = st.number_input(
         "Output tokens",
         min_value=0,
@@ -182,12 +191,12 @@ if estimation_mode == "Endpoint estimate":
     )
     st.info(
         "Endpoint-based estimation UI is available, but live authenticated Azure/Databricks endpoint calls are not "
-        "implemented in this codebase yet. Use this section to stage the endpoint inputs, or use the manual estimator below."
+        "implemented in this codebase yet. Use this section to stage the endpoint inputs."
     )
     endpoint_payload = ParsedInferencePayload(
         runtime_vendor=endpoint_runtime,
         runtime_endpoint=endpoint_url.strip() or None,
-        runtime_deployment=endpoint_model.strip() or None,
+        runtime_deployment=endpoint_deployment.strip() or None,
         response_model=endpoint_model.strip() or None,
         output_tokens=int(endpoint_output_tokens) if endpoint_output_tokens > 0 else None,
         parse_messages=[
@@ -195,49 +204,47 @@ if estimation_mode == "Endpoint estimate":
         ],
     )
     _display_normalized_payload(endpoint_payload, "Normalized endpoint payload")
-
-
-st.subheader("Manual EcoLogits estimation")
-
-provider_options = catalog_index.providers if catalog_index else []
-selected_provider = None
-selected_model = None
-
-if provider_options:
-    selected_provider = st.selectbox("EcoLogits provider", provider_options, index=0)
-    model_options = catalog_snapshot.get(selected_provider, [])
-    if model_options:
-        selected_model = st.selectbox("EcoLogits model", model_options, index=0)
+    estimate_clicked = False
 else:
-    selected_provider = st.text_input("EcoLogits provider")
-    selected_model = st.text_input("EcoLogits model")
+    st.subheader("Manual estimation")
 
-output_tokens = st.number_input(
-    "Output tokens",
-    min_value=0,
-    step=1,
-    value=0,
-)
+    provider_options = catalog_index.providers if catalog_index else []
+    selected_provider = None
+    selected_model = None
 
-manual_payload = ParsedInferencePayload(
-    runtime_vendor="manual",
-    response_model=str(selected_model).strip() or None,
-    output_tokens=output_tokens if output_tokens > 0 else None,
-    parse_messages=["Manual EcoLogits estimation uses the selected provider/model pair directly."],
-)
-_display_normalized_payload(manual_payload, "Normalized manual payload")
+    if provider_options:
+        selected_provider = st.selectbox("Provider", provider_options, index=0)
+        model_options = catalog_snapshot.get(selected_provider, [])
+        if model_options:
+            selected_model = st.selectbox("Model", model_options, index=0)
+    else:
+        selected_provider = st.text_input("Provider")
+        selected_model = st.text_input("Model")
 
+    output_tokens = st.number_input(
+        "Output tokens",
+        min_value=0,
+        step=1,
+        value=0,
+    )
 
-estimate_clicked = st.button("Estimate impact", type="primary", width="stretch")
+    manual_payload = ParsedInferencePayload(
+        runtime_vendor="manual",
+        response_model=str(selected_model).strip() or None,
+        output_tokens=output_tokens if output_tokens > 0 else None,
+        parse_messages=["Manual estimation uses the selected provider/model pair directly."],
+    )
+    _display_normalized_payload(manual_payload, "Normalized manual payload")
+    estimate_clicked = st.button("Estimate impact", type="primary", width="stretch")
 
-if estimate_clicked:
+if estimation_mode == "Manual EcoLogits estimate" and estimate_clicked:
     validation_errors: list[str] = []
     if output_tokens <= 0:
         validation_errors.append("Output tokens must be greater than 0.")
     if not selected_provider:
-        validation_errors.append("EcoLogits provider is required.")
+        validation_errors.append("Provider is required.")
     if not selected_model:
-        validation_errors.append("EcoLogits model is required.")
+        validation_errors.append("Model is required.")
 
     if validation_errors:
         for validation_error in validation_errors:
