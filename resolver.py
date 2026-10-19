@@ -32,10 +32,6 @@ def _infer_provider_candidates(parsed_payload: ParsedInferencePayload) -> list[s
         candidates.append("anthropic")
     if "gemini" in model_name:
         candidates.append("google_genai")
-    if "command" in model_name or "cohere" in model_name:
-        candidates.append("cohere")
-    if "mistral" in model_name or "mixtral" in model_name:
-        candidates.extend(["mistralai", "huggingface_hub"])
     if any(keyword in model_name for keyword in ["dbrx", "dolly", "llama", "phi", "/"]):
         candidates.append("huggingface_hub")
     return _dedupe(candidates)
