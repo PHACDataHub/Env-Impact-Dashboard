@@ -92,25 +92,43 @@ def _summarize_history(records_df: pd.DataFrame) -> None:
         "impact_gwp_max",
         "impact_energy_min",
         "impact_energy_max",
+        "impact_adpe_min",
+        "impact_adpe_max",
+        "impact_pe_min",
+        "impact_pe_max",
+        "impact_wcf_min",
+        "impact_wcf_max",
     ]
     history_df = records_df[history_columns].sort_values("captured_at", ascending=False).copy()
     rename_map = {
         "captured_at": "Captured at",
         "runtime_vendor": "Source",
         "response_model": "Model",
-        "eco_provider": "EcoLogits provider",
-        "eco_model_name": "EcoLogits model",
+        "eco_provider": "Provider",
+        "eco_model_name": "Model",
         "output_tokens": "Output tokens",
         "impact_gwp_min": "GWP min (kgCO2eq)",
         "impact_gwp_max": "GWP max (kgCO2eq)",
         "impact_energy_min": "Energy min (kWh)",
         "impact_energy_max": "Energy max (kWh)",
+        "impact_adpe_min": "ADPe min (kgSbeq)",
+        "impact_adpe_max": "ADPe max (kgSbeq)",
+        "impact_pe_min": "Primary energy min (MJ)",
+        "impact_pe_max": "Primary energy max (MJ)",
+        "impact_wcf_min": "Water min (L)",
+        "impact_wcf_max": "Water max (L)",
     }
     for column in [
         "impact_gwp_min",
         "impact_gwp_max",
         "impact_energy_min",
         "impact_energy_max",
+        "impact_adpe_min",
+        "impact_adpe_max",
+        "impact_pe_min",
+        "impact_pe_max",
+        "impact_wcf_min",
+        "impact_wcf_max",
     ]:
         history_df[column] = history_df[column].map(_format_number)
 
