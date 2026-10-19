@@ -103,9 +103,9 @@ def _summarize_history(records_df: pd.DataFrame) -> None:
     rename_map = {
         "captured_at": "Captured at",
         "runtime_vendor": "Source",
-        "response_model": "Model",
+        "response_model": "Runtime model",
         "eco_provider": "Provider",
-        "eco_model_name": "Model",
+        "eco_model_name": "EcoLogits model",
         "output_tokens": "Output tokens",
         "impact_gwp_min": "GWP min (kgCO2eq)",
         "impact_gwp_max": "GWP max (kgCO2eq)",
