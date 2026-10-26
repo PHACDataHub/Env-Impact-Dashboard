@@ -14,7 +14,7 @@ def test_saved_history_uses_unique_display_columns(monkeypatch) -> None:
                 {
                     "captured_at": "2026-10-19T00:00:00Z",
                     "runtime_vendor": "manual",
-                    "response_model": "runtime-model",
+                    "runtime_endpoint": "https://example.azure.com",
                     "eco_provider": "openai",
                     "eco_model_name": "catalog-model",
                     "output_tokens": 42,
@@ -36,7 +36,7 @@ def test_saved_history_uses_unique_display_columns(monkeypatch) -> None:
     assert len(displayed) == 1
     assert displayed[0].columns.is_unique
     assert displayed[0].columns.tolist()[2:5] == [
-        "Runtime model",
+        "Endpoint",
         "Provider",
         "Model",
     ]
