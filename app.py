@@ -1,6 +1,9 @@
 # --- diagnostics bootstrap: install crash/exception logging before app code ---
 import os as _diag_os
 import sys as _diag_sys
+from datetime import timedelta
+
+from dotenv import load_dotenv
 
 _diag_dir = _diag_os.path.dirname(_diag_os.path.abspath(__file__))
 if _diag_dir not in _diag_sys.path:
@@ -10,10 +13,20 @@ import app_diagnostics  # noqa: E402
 app_diagnostics.install_diagnostics()
 # --- end diagnostics bootstrap ---
 
+
+def _load_local_environment() -> None:
+    """Load local environment values without overriding process environment values."""
+    env_path = _diag_os.path.join(_diag_dir, ".env")
+    load_dotenv(dotenv_path=env_path, override=False)
+
+
+_load_local_environment()
+
 import httpx
 import pandas as pd
 import streamlit as st
 
+from azure_metrics import AzureMetricsClient
 from ecologits_client import EcoLogitsClient
 from models import CatalogIndex, EstimationRequest, ImpactRecord, ParsedInferencePayload
 from storage import RecordStore
@@ -45,6 +58,11 @@ def get_record_store() -> RecordStore:
     return RecordStore()
 
 
+@st.cache_resource
+def get_azure_metrics_client() -> AzureMetricsClient:
+    return AzureMetricsClient()
+
+
 def _format_number(value: float | int | None) -> str:
     if value is None:
         return "Not available"
@@ -64,13 +82,9 @@ def _format_range(record: ImpactRecord, prefix: str, unit: str) -> str:
 
 def _display_normalized_payload(parsed_payload: ParsedInferencePayload, heading: str) -> None:
     st.caption(heading)
-    payload_cols = st.columns(4)
+    payload_cols = st.columns(2)
     payload_cols[0].metric("Source", parsed_payload.runtime_vendor)
-    payload_cols[1].metric("Model", parsed_payload.response_model or "Not available")
-    payload_cols[2].metric("Output tokens", _format_number(parsed_payload.output_tokens))
-    payload_cols[3].metric("Endpoint", parsed_payload.runtime_endpoint or "Not available")
-    if parsed_payload.runtime_deployment:
-        st.caption(f"Deployment: {parsed_payload.runtime_deployment}")
+    payload_cols[1].metric("Output tokens", _format_number(parsed_payload.output_tokens))
     for message in parsed_payload.parse_messages:
         st.caption(f"• {message}")
 
@@ -84,7 +98,7 @@ def _summarize_history(records_df: pd.DataFrame) -> None:
     history_columns = [
         "captured_at",
         "runtime_vendor",
-        "response_model",
+        "runtime_endpoint",
         "eco_provider",
         "eco_model_name",
         "output_tokens",
@@ -102,8 +116,8 @@ def _summarize_history(records_df: pd.DataFrame) -> None:
     history_df = records_df[history_columns].sort_values("captured_at", ascending=False).copy()
     rename_map = {
         "captured_at": "Captured at",
-        "runtime_vendor": "Source",
-        "response_model": "Runtime model",
+        "runtime_vendor": "Runtime",
+        "runtime_endpoint": "Endpoint",
         "eco_provider": "Provider",
         "eco_model_name": "Model",
         "output_tokens": "Output tokens",
@@ -171,41 +185,99 @@ estimation_mode = st.radio(
 if estimation_mode == "Endpoint estimate":
     st.subheader("Endpoint estimate")
     endpoint_runtime = st.selectbox("Endpoint type", options=["azure", "databricks"], index=0)
-    endpoint_url = st.text_input("Endpoint URL")
-    endpoint_deployment = st.text_input("Deployment name")
-    endpoint_model_options = [
-        model
-        for models in catalog_snapshot.values()
-        for model in models
-    ]
-    if endpoint_model_options:
-        endpoint_model = st.selectbox("Model", endpoint_model_options, index=0)
-    else:
-        endpoint_model = st.text_input("Model")
-    endpoint_output_tokens = st.number_input(
-        "Output tokens",
-        min_value=0,
-        step=1,
-        value=0,
-        key="endpoint_output_tokens",
+    endpoint_period_days = st.selectbox(
+        "Azure Monitor period",
+        options=[1, 7, 14, 30, 60, 90, 120],
+        format_func=lambda days: f"{days} day{'s' if days != 1 else ''}",
     )
-    st.info(
-        "Endpoint-based estimation UI is available, but live authenticated Azure/Databricks endpoint calls are not "
-        "implemented in this codebase yet. Use this section to stage the endpoint inputs."
-    )
+    endpoint_timespan = timedelta(days=endpoint_period_days)
+    endpoint_metrics = {}
+    endpoint_model_metrics = {}
+    try:
+        azure_metrics = get_azure_metrics_client()
+        endpoint_metrics = {
+            "response_model": azure_metrics.get_response_model(endpoint_timespan),
+            "output_tokens": azure_metrics.get_output_tokens(endpoint_timespan),
+            "request_latency": azure_metrics.get_request_latency(endpoint_timespan),
+        }
+        endpoint_model_metrics = azure_metrics.get_model_metrics(endpoint_timespan)
+    except Exception as exc:  # pragma: no cover - exercised by deployment configuration
+        st.error(f"Unable to read Azure Monitor metrics: {exc}")
     endpoint_payload = ParsedInferencePayload(
         runtime_vendor=endpoint_runtime,
-        runtime_endpoint=endpoint_url.strip() or None,
-        runtime_deployment=endpoint_deployment.strip() or None,
-        response_model=endpoint_model.strip() or None,
-        output_tokens=int(endpoint_output_tokens) if endpoint_output_tokens > 0 else None,
-        parse_messages=[
-            "Endpoint estimation inputs are staged here for future authenticated endpoint integration."
-        ],
+        response_model=endpoint_metrics.get("response_model"),
+        output_tokens=endpoint_metrics.get("output_tokens"),
+        latency_seconds=endpoint_metrics.get("request_latency"),
     )
     _display_normalized_payload(endpoint_payload, "Normalized endpoint payload")
-    estimate_clicked = False
-else:
+    estimate_clicked = st.button(
+        "Estimate impact",
+        type="primary",
+        width="stretch",
+        key="endpoint_estimate_button",
+    )
+
+if estimation_mode == "Endpoint estimate" and estimate_clicked:
+    validation_errors: list[str] = []
+    if not endpoint_model_metrics and endpoint_payload.output_tokens is None:
+        validation_errors.append("No Azure Monitor model metrics were available.")
+
+    if validation_errors:
+        for validation_error in validation_errors:
+            st.error(validation_error)
+    elif not endpoint_payload.output_tokens:
+        st.warning(
+            "Azure Monitor returned zero output tokens. The normalized payload "
+            "is shown above, but no EcoLogits request was sent."
+        )
+    else:
+        estimation_request = EstimationRequest(
+            provider=os.environ["AZURE_PROVIDER"].strip(),
+            model_name=str(endpoint_payload.response_model),
+            output_token_count=endpoint_payload.output_tokens,
+            request_latency=endpoint_payload.latency_seconds,
+            electricity_mix_zone=os.getenv("ELECTRICITY_MIX_ZONE"),
+        )
+        client = get_ecologits_client()
+        store = get_record_store()
+        try:
+            with st.spinner("Requesting EcoLogits estimations..."):
+                impact_records = []
+                for model_name, model_metrics in endpoint_model_metrics.items():
+                    model_payload = endpoint_payload.model_copy(update={
+                        "response_model": model_name,
+                        "output_tokens": model_metrics["output_tokens"],
+                        "latency_seconds": model_metrics["request_latency"],
+                    })
+                    model_request = estimation_request.model_copy(update={
+                        "model_name": model_name,
+                        "output_token_count": model_metrics["output_tokens"],
+                        "request_latency": model_metrics["request_latency"],
+                    })
+                    estimation_result = client.estimate(model_request)
+                    impact_records.append(ImpactRecord.from_estimation(
+                project_id="default-project",
+                project_name="Default Project",
+                project_group=None,
+                environment=None,
+                parsed_payload=model_payload,
+                eco_provider=model_request.provider,
+                eco_model_name=model_request.model_name,
+                resolution_status="manual_override",
+                resolution_notes=[],
+                electricity_mix_zone=estimation_request.electricity_mix_zone,
+                estimation_result=estimation_result,
+                    ))
+                for impact_record in impact_records:
+                    store.append(impact_record)
+            if impact_records:
+                st.session_state["latest_record"] = impact_records[-1].model_dump(mode="json")
+            st.success(f"Azure endpoint impact estimated for {len(impact_records)} model(s) and saved.")
+        except httpx.HTTPStatusError as exc:
+            st.error(f"EcoLogits request failed: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            st.error(f"Unable to reach EcoLogits: {exc}")
+if estimation_mode == "Manual EcoLogits estimate":
     st.subheader("Manual estimation")
 
     provider_options = catalog_index.providers if catalog_index else []
@@ -227,15 +299,33 @@ else:
         step=1,
         value=0,
     )
+    request_latency = st.number_input(
+        "Request latency (seconds)",
+        min_value=0.0,
+        step=0.1,
+        value=0.0,
+    )
+    electricity_mix_zone = st.selectbox(
+        "Electricity mix zone",
+        options=["WOR"],
+        index=0,
+        help="EcoLogits accepts ISO 3166-1 alpha-3 zone codes. WOR is the world average.",
+    )
 
     manual_payload = ParsedInferencePayload(
         runtime_vendor="manual",
         response_model=str(selected_model).strip() or None,
         output_tokens=output_tokens if output_tokens > 0 else None,
+        latency_seconds=request_latency if request_latency > 0 else None,
         parse_messages=["Manual estimation uses the selected provider/model pair directly."],
     )
     _display_normalized_payload(manual_payload, "Normalized manual payload")
-    estimate_clicked = st.button("Estimate impact", type="primary", width="stretch")
+    estimate_clicked = st.button(
+        "Estimate impact",
+        type="primary",
+        width="stretch",
+        key="manual_estimate_button",
+    )
 
 if estimation_mode == "Manual EcoLogits estimate" and estimate_clicked:
     validation_errors: list[str] = []
@@ -245,6 +335,8 @@ if estimation_mode == "Manual EcoLogits estimate" and estimate_clicked:
         validation_errors.append("Provider is required.")
     if not selected_model:
         validation_errors.append("Model is required.")
+    if request_latency <= 0:
+        validation_errors.append("Request latency must be greater than 0 seconds.")
 
     if validation_errors:
         for validation_error in validation_errors:
@@ -255,6 +347,8 @@ if estimation_mode == "Manual EcoLogits estimate" and estimate_clicked:
             provider=str(selected_provider),
             model_name=str(selected_model),
             output_token_count=output_tokens,
+            request_latency=float(request_latency),
+            electricity_mix_zone=electricity_mix_zone,
         )
         client = get_ecologits_client()
         store = get_record_store()
@@ -271,7 +365,7 @@ if estimation_mode == "Manual EcoLogits estimate" and estimate_clicked:
                 eco_model_name=str(selected_model),
                 resolution_status="manual_override",
                 resolution_notes=[],
-                electricity_mix_zone=None,
+                electricity_mix_zone=electricity_mix_zone,
                 estimation_result=estimation_result,
             )
             store.append(impact_record)
