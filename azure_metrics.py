@@ -64,15 +64,7 @@ class AzureMetricsClient:
 
     @classmethod
     def _model_name(cls, series) -> str | None:
-        """Return the Azure OpenAI model dimension from a metric series.
-
-        Azure OpenAI metrics expose both ModelName and ModelDeploymentName.
-        ModelDeploymentName is the deployment selected in Azure, while
-        ModelName is the underlying model family. Prefer ModelName so the
-        EcoLogits catalog receives values such as ``gpt-5-mini`` rather than a
-        deployment alias, and fall back to the deployment dimension when the
-        model dimension is absent.
-        """
+        """Return the Azure OpenAI model dimension from a metric series."""
         metadata_by_name = cls._series_dimensions(series)
         for dimension in cls.MODEL_DIMENSIONS:
             value = metadata_by_name.get(dimension.lower())
@@ -103,9 +95,6 @@ class AzureMetricsClient:
     def get_model_metrics(
         self, timespan: timedelta
     ) -> dict[str, dict[str, float | int | None]]:
-        # Azure only returns model dimensions when the query explicitly asks for
-        # them. This is the same per-model query shape used by the working
-        # diagnostic script.
         result = self._client.query_resource(
             self.resource_id,
             metric_names=[self.OUTPUT_TOKENS_METRIC],
