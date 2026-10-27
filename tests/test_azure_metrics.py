@@ -122,6 +122,28 @@ def test_get_response_model_reads_model_name_dimension() -> None:
     assert client.get_response_model(timedelta(hours=1)) == "gpt-4o"
 
 
+def test_get_response_model_falls_back_to_model_deployment_name_dimension() -> None:
+    result = SimpleNamespace(
+        metrics=[
+            SimpleNamespace(
+                timeseries=[
+                    SimpleNamespace(
+                        metadata_values=[
+                            SimpleNamespace(name="ModelDeploymentName", value="gpt-5-mini")
+                        ],
+                        data=[],
+                    )
+                ]
+            )
+        ]
+    )
+    client = object.__new__(AzureMetricsClient)
+    client.resource_id = "/subscriptions/test/resourceGroups/test/providers/test/resource"
+    client._client = _FakeMetricsClient(result)
+
+    assert client.get_response_model(timedelta(hours=1)) == "gpt-5-mini"
+
+
 def test_get_request_latency_uses_azure_openai_time_to_last_byte_metric(monkeypatch) -> None:
     result = SimpleNamespace(
         metrics=[
@@ -178,4 +200,80 @@ def test_get_model_metrics_groups_output_tokens_and_latency_by_model() -> None:
     assert client.get_model_metrics(timedelta(days=14)) == {
         "gpt-4o": {"output_tokens": 100, "request_latency": 1.5},
         "gpt-4o-mini": {"output_tokens": 50, "request_latency": 0.5},
+    }
+
+
+def test_get_model_metrics_uses_model_deployment_name_dimension() -> None:
+    output_result = SimpleNamespace(metrics=[SimpleNamespace(timeseries=[
+        SimpleNamespace(
+            metadata_values=[SimpleNamespace(name="ModelDeploymentName", value="gpt-5.4-mini")],
+            data=[SimpleNamespace(total=100)],
+        ),
+        SimpleNamespace(
+            metadata_values=[SimpleNamespace(name="ModelDeploymentName", value="gpt-5-mini")],
+            data=[SimpleNamespace(total=50)],
+        ),
+    ])])
+    latency_result = SimpleNamespace(metrics=[SimpleNamespace(timeseries=[
+        SimpleNamespace(
+            metadata_values=[SimpleNamespace(name="ModelDeploymentName", value="gpt-5.4-mini")],
+            data=[SimpleNamespace(average=1.0)],
+        ),
+        SimpleNamespace(
+            metadata_values=[SimpleNamespace(name="ModelDeploymentName", value="gpt-5-mini")],
+            data=[SimpleNamespace(average=0.5)],
+        ),
+    ])])
+
+    class _MultiResultClient(_FakeMetricsClient):
+        def __init__(self) -> None:
+            self.arguments = []
+
+        def query_resource(self, resource_id, **kwargs):
+            self.arguments.append((resource_id, kwargs))
+            return output_result if kwargs["metric_names"] == ["OutputTokens"] else latency_result
+
+    client = object.__new__(AzureMetricsClient)
+    client.resource_id = "/subscriptions/test/resourceGroups/test/providers/test/resource"
+    client._client = _MultiResultClient()
+
+    assert client.get_model_metrics(timedelta(days=14)) == {
+        "gpt-5.4-mini": {"output_tokens": 100, "request_latency": 1.0},
+        "gpt-5-mini": {"output_tokens": 50, "request_latency": 0.5},
+    }
+
+
+def test_get_model_metrics_reads_dimension_values_shape() -> None:
+    output_result = SimpleNamespace(metrics=[SimpleNamespace(timeseries=[
+        SimpleNamespace(
+            dimension_values=[SimpleNamespace(name="ModelName", value="gpt-5.4-mini")],
+            data=[SimpleNamespace(total=100)],
+        ),
+        SimpleNamespace(
+            dimension_values=[{"name": "ModelName", "value": "gpt-5-mini"}],
+            data=[SimpleNamespace(total=50)],
+        ),
+    ])])
+    latency_result = SimpleNamespace(metrics=[SimpleNamespace(timeseries=[
+        SimpleNamespace(
+            dimension_values={"ModelName": "gpt-5.4-mini"},
+            data=[SimpleNamespace(average=1.0)],
+        ),
+        SimpleNamespace(
+            dimensions={"ModelName": "gpt-5-mini"},
+            data=[SimpleNamespace(average=0.5)],
+        ),
+    ])])
+
+    class _MultiResultClient:
+        def query_resource(self, resource_id, **kwargs):
+            return output_result if kwargs["metric_names"] == ["OutputTokens"] else latency_result
+
+    client = object.__new__(AzureMetricsClient)
+    client.resource_id = "/subscriptions/test/resourceGroups/test/providers/test/resource"
+    client._client = _MultiResultClient()
+
+    assert client.get_model_metrics(timedelta(days=14)) == {
+        "gpt-5.4-mini": {"output_tokens": 100, "request_latency": 1.0},
+        "gpt-5-mini": {"output_tokens": 50, "request_latency": 0.5},
     }

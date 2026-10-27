@@ -14,6 +14,9 @@ class AzureMetricsClient:
 
     OUTPUT_TOKENS_METRIC = "OutputTokens"
     REQUEST_LATENCY_METRIC = "AzureOpenAITTLTInMS"
+    PER_MODEL_FILTER = (
+        "ModelName eq '*' and ModelDeploymentName eq '*' and ModelVersion eq '*'"
+    )
 
     def __init__(
         self,
@@ -57,59 +60,96 @@ class AzureMetricsClient:
                         values.append(float(selected_value))
         return values
 
-    @staticmethod
-    def _model_name(series) -> str | None:
-        for metadata in getattr(series, "metadata_values", []):
-            if getattr(metadata, "name", None) == "ModelName":
-                value = getattr(metadata, "value", None)
-                if value and value != "*":
-                    return str(value)
+    MODEL_DIMENSIONS = ("ModelName", "ModelDeploymentName", "ModelVersion")
+
+    @classmethod
+    def _model_name(cls, series) -> str | None:
+        """Return the Azure OpenAI model dimension from a metric series.
+
+        Azure OpenAI metrics expose both ModelName and ModelDeploymentName.
+        ModelDeploymentName is the deployment selected in Azure, while
+        ModelName is the underlying model family. Prefer ModelName so the
+        EcoLogits catalog receives values such as ``gpt-5-mini`` rather than a
+        deployment alias, and fall back to the deployment dimension when the
+        model dimension is absent.
+        """
+        metadata_by_name = cls._series_dimensions(series)
+        for dimension in cls.MODEL_DIMENSIONS:
+            value = metadata_by_name.get(dimension.lower())
+            if value and str(value) != "*":
+                return str(value)
         return None
+
+    @staticmethod
+    def _series_dimensions(series) -> dict[str, object]:
+        """Extract dimensions from Azure Monitor SDK and raw-response shapes."""
+        dimensions: dict[str, object] = {}
+        for collection_name in ("metadata_values", "dimension_values", "dimensions"):
+            collection = getattr(series, collection_name, None)
+            if isinstance(collection, dict):
+                dimensions.update({str(key).lower(): value for key, value in collection.items()})
+            else:
+                for item in collection or []:
+                    if isinstance(item, dict):
+                        name = item.get("name") or item.get("key")
+                        value = item.get("value")
+                    else:
+                        name = getattr(item, "name", None) or getattr(item, "key", None)
+                        value = getattr(item, "value", None)
+                    if name is not None:
+                        dimensions[str(name).lower()] = value
+        return dimensions
 
     def get_model_metrics(
         self, timespan: timedelta
     ) -> dict[str, dict[str, float | int | None]]:
-        results: dict[str, dict[str, float | int | None]] = defaultdict(
-            lambda: {"output_tokens": 0, "request_latency": 0.0, "latency_samples": 0}
-        )
-        output_result = self._client.query_resource(
+        # Azure only returns model dimensions when the query explicitly asks for
+        # them. This is the same per-model query shape used by the working
+        # diagnostic script.
+        result = self._client.query_resource(
             self.resource_id,
             metric_names=[self.OUTPUT_TOKENS_METRIC],
             timespan=timespan,
             aggregations=[MetricAggregationType.TOTAL],
+            filter=self.PER_MODEL_FILTER,
+            max_results=1000,
         )
-        for metric in output_result.metrics:
+        output_by_model: defaultdict[str, float] = defaultdict(float)
+        for metric in result.metrics:
             for series in metric.timeseries:
                 model_name = self._model_name(series)
                 if not model_name:
                     continue
-                results[model_name]["output_tokens"] += sum(
-                    float(point.total) for point in series.data if point.total is not None
-                )
-
+                for point in series.data:
+                    if point.total is not None:
+                        output_by_model[model_name] += float(point.total)
         latency_result = self._client.query_resource(
             self.resource_id,
             metric_names=[self.REQUEST_LATENCY_METRIC],
             timespan=timespan,
             aggregations=[MetricAggregationType.AVERAGE],
+            filter=self.PER_MODEL_FILTER,
+            max_results=1000,
         )
+        latency_by_model: dict[str, list[float]] = defaultdict(list)
         for metric in latency_result.metrics:
             for series in metric.timeseries:
                 model_name = self._model_name(series)
-                if not model_name:
-                    continue
-                samples = [float(point.average) for point in series.data if point.average is not None]
-                if samples:
-                    results[model_name]["request_latency"] = sum(samples) / len(samples)
-                    results[model_name]["latency_samples"] = len(samples)
-
+                if model_name:
+                    latency_by_model[model_name].extend(
+                        float(point.average) for point in series.data if point.average is not None
+                    )
         return {
             model_name: {
-                "output_tokens": int(values["output_tokens"]),
-                "request_latency": float(values["request_latency"]) if values["latency_samples"] else None,
+                "output_tokens": int(tokens),
+                "request_latency": (
+                    sum(latency_by_model[model_name]) / len(latency_by_model[model_name])
+                    if latency_by_model[model_name]
+                    else None
+                ),
             }
-            for model_name, values in results.items()
-            if values["output_tokens"]
+            for model_name, tokens in output_by_model.items()
+            if tokens
         }
 
     def get_output_tokens(self, timespan: timedelta) -> int | None:
@@ -125,14 +165,15 @@ class AzureMetricsClient:
             self.resource_id,
             metric_names=[self.OUTPUT_TOKENS_METRIC],
             timespan=timespan,
+            aggregations=[MetricAggregationType.TOTAL],
+            filter=self.PER_MODEL_FILTER,
+            max_results=1000,
         )
         for metric in result.metrics:
             for series in metric.timeseries:
-                for metadata in getattr(series, "metadata_values", []):
-                    if getattr(metadata, "name", None) == "ModelName":
-                        value = getattr(metadata, "value", None)
-                        if value:
-                            return str(value)
+                model_name = self._model_name(series)
+                if model_name:
+                    return model_name
         return None
 
     def close(self) -> None:
