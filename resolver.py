@@ -39,7 +39,7 @@ def _infer_provider_candidates(parsed_payload: ParsedInferencePayload) -> list[s
 
 def _model_candidates_for_provider(model_name: str, provider: str) -> list[str]:
     normalized = model_name.strip()
-    lowered = normalized.lower()
+    lowered = normalized.lower().replace("_", "-").replace(" ", "-")
     candidates: list[str | None] = [normalized]
 
     openai_aliases = {
@@ -49,6 +49,13 @@ def _model_candidates_for_provider(model_name: str, provider: str) -> list[str]:
     }
 
     if provider == "openai":
+        candidates.extend(
+            [
+                lowered,
+                lowered.replace("gpt-5.4-", "gpt-5-"),
+                lowered.replace("gpt-5.4", "gpt-5"),
+            ]
+        )
         candidates.append(openai_aliases.get(lowered))
         dated_match = re.match(r"^(gpt-[\w\.-]+?)-\d{4}-\d{2}-\d{2}$", lowered)
         if dated_match:
