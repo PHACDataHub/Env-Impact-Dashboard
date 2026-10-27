@@ -1,5 +1,6 @@
 # --- diagnostics bootstrap: install crash/exception logging before app code ---
 import os as _diag_os
+import os
 import sys as _diag_sys
 from datetime import timedelta
 
@@ -29,6 +30,7 @@ import streamlit as st
 from azure_metrics import AzureMetricsClient
 from ecologits_client import EcoLogitsClient
 from models import CatalogIndex, EstimationRequest, ImpactRecord, ParsedInferencePayload
+from resolver import resolve_ecologits_target
 from storage import RecordStore
 
 
@@ -210,6 +212,43 @@ if estimation_mode == "Endpoint estimate":
         latency_seconds=endpoint_metrics.get("request_latency"),
     )
     _display_normalized_payload(endpoint_payload, "Normalized endpoint payload")
+    preview_requests = []
+    for model_name, model_metrics in endpoint_model_metrics.items():
+        model_payload = endpoint_payload.model_copy(update={
+            "response_model": model_name,
+            "output_tokens": model_metrics["output_tokens"],
+            "latency_seconds": model_metrics["request_latency"],
+            "response_provider_hint": "openai",
+        })
+        resolution = resolve_ecologits_target(model_payload, catalog_index)
+        preview_requests.append({
+            "request": EstimationRequest(
+                provider=resolution.eco_provider or "openai",
+                model_name=resolution.eco_model_name or model_name,
+                output_token_count=model_metrics["output_tokens"],
+                request_latency=model_metrics["request_latency"],
+                electricity_mix_zone=os.getenv("ELECTRICITY_MIX_ZONE"),
+            ).model_dump(exclude_none=True),
+            "resolution_status": resolution.status,
+            "resolution_messages": resolution.messages,
+        })
+    if not preview_requests:
+        preview_requests = [{
+            "request": None,
+            "resolution_status": "unresolved",
+            "resolution_messages": [
+                "No per-model Azure Monitor series were returned, so there is no model-specific request body to preview."
+            ],
+            "aggregate_metrics": {
+                "response_model": endpoint_payload.response_model,
+                "output_tokens": endpoint_payload.output_tokens,
+                "request_latency": endpoint_payload.latency_seconds,
+                "provider": "openai",
+                "electricity_mix_zone": os.getenv("ELECTRICITY_MIX_ZONE"),
+            },
+        }]
+    st.caption("EcoLogits request body diagnostic")
+    st.json(preview_requests)
     estimate_clicked = st.button(
         "Estimate impact",
         type="primary",
@@ -225,19 +264,17 @@ if estimation_mode == "Endpoint estimate" and estimate_clicked:
     if validation_errors:
         for validation_error in validation_errors:
             st.error(validation_error)
+    elif not endpoint_model_metrics:
+        st.warning(
+            "Azure Monitor returned aggregate output tokens but no per-model series. "
+            "No model-specific EcoLogits estimate was sent."
+        )
     elif not endpoint_payload.output_tokens:
         st.warning(
             "Azure Monitor returned zero output tokens. The normalized payload "
             "is shown above, but no EcoLogits request was sent."
         )
     else:
-        estimation_request = EstimationRequest(
-            provider=os.environ["AZURE_PROVIDER"].strip(),
-            model_name=str(endpoint_payload.response_model),
-            output_token_count=endpoint_payload.output_tokens,
-            request_latency=endpoint_payload.latency_seconds,
-            electricity_mix_zone=os.getenv("ELECTRICITY_MIX_ZONE"),
-        )
         client = get_ecologits_client()
         store = get_record_store()
         try:
@@ -249,11 +286,24 @@ if estimation_mode == "Endpoint estimate" and estimate_clicked:
                         "output_tokens": model_metrics["output_tokens"],
                         "latency_seconds": model_metrics["request_latency"],
                     })
-                    model_request = estimation_request.model_copy(update={
-                        "model_name": model_name,
-                        "output_token_count": model_metrics["output_tokens"],
-                        "request_latency": model_metrics["request_latency"],
-                    })
+                    # Azure endpoint models are Azure OpenAI models.
+                    model_payload = model_payload.model_copy(
+                        update={"response_provider_hint": "openai"}
+                    )
+                    resolution = resolve_ecologits_target(model_payload, catalog_index)
+                    if resolution.eco_provider is None or resolution.eco_model_name is None:
+                        st.warning(
+                            f"Could not map Azure model '{model_name}' to an EcoLogits model: "
+                            + "; ".join(resolution.messages)
+                        )
+                        continue
+                    model_request = EstimationRequest(
+                        provider=resolution.eco_provider,
+                        model_name=resolution.eco_model_name,
+                        output_token_count=model_metrics["output_tokens"],
+                        request_latency=model_metrics["request_latency"],
+                        electricity_mix_zone=os.getenv("ELECTRICITY_MIX_ZONE"),
+                    )
                     estimation_result = client.estimate(model_request)
                     impact_records.append(ImpactRecord.from_estimation(
                 project_id="default-project",
@@ -263,9 +313,9 @@ if estimation_mode == "Endpoint estimate" and estimate_clicked:
                 parsed_payload=model_payload,
                 eco_provider=model_request.provider,
                 eco_model_name=model_request.model_name,
-                resolution_status="manual_override",
-                resolution_notes=[],
-                electricity_mix_zone=estimation_request.electricity_mix_zone,
+                resolution_status=resolution.status,
+                resolution_notes=resolution.messages,
+                electricity_mix_zone=model_request.electricity_mix_zone,
                 estimation_result=estimation_result,
                     ))
                 for impact_record in impact_records:
