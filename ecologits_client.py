@@ -42,9 +42,11 @@ class EcoLogitsClient:
         return list(self._models_cache[provider])
 
     def estimate(self, request: EstimationRequest) -> EcoLogitsEstimationResult:
+        request_body = request.model_dump(exclude_none=True)
+        print(f"EcoLogits request body: {request_body!r}", flush=True)
         response = self._client.post(
             "/v1beta/estimations",
-            json=request.model_dump(exclude_none=True),
+            json=request_body,
         )
         response.raise_for_status()
         payload = response.json()
