@@ -115,9 +115,21 @@ def _summarize_history(records_df: pd.DataFrame) -> None:
         "impact_wcf_min",
         "impact_wcf_max",
     ]
-    history_df = records_df[history_columns].sort_values("captured_at", ascending=False).copy()
+    history_df = records_df[history_columns].copy()
+    history_df["_captured_group"] = history_df["captured_at"].map(
+        lambda value: str(value)[:19]
+    )
+    history_df = history_df.sort_values("captured_at", ascending=False)
+    history_ids = {
+        captured_group: history_id
+        for history_id, captured_group in enumerate(
+            history_df["_captured_group"].drop_duplicates(), start=1
+        )
+    }
+    history_df.insert(0, "history_id", history_df["_captured_group"].map(history_ids))
+    history_df = history_df.drop(columns=["_captured_group", "captured_at"])
     rename_map = {
-        "captured_at": "Captured at",
+        "history_id": "ID",
         "runtime_vendor": "Runtime",
         "runtime_endpoint": "Endpoint",
         "eco_provider": "Provider",
