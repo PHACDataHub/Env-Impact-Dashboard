@@ -102,6 +102,23 @@ def test_get_output_tokens_reads_single_metrics_query_result(monkeypatch) -> Non
     assert fake_client.arguments[0].startswith("/subscriptions/test/")
 
 
+def test_get_request_latency_converts_milliseconds_to_seconds() -> None:
+    result = SimpleNamespace(
+        metrics=[
+            SimpleNamespace(
+                timeseries=[
+                    SimpleNamespace(data=[SimpleNamespace(total=None, average=1500.0)])
+                ]
+            )
+        ]
+    )
+    client = object.__new__(AzureMetricsClient)
+    client.resource_id = "/subscriptions/test/resourceGroups/test/providers/test/resource"
+    client._client = _FakeMetricsClient(result)
+
+    assert client.get_request_latency(timedelta(hours=1)) == 1.5
+
+
 def test_get_response_model_reads_model_name_dimension() -> None:
     result = SimpleNamespace(
         metrics=[
@@ -144,25 +161,6 @@ def test_get_response_model_falls_back_to_model_deployment_name_dimension() -> N
     assert client.get_response_model(timedelta(hours=1)) == "gpt-5-mini"
 
 
-def test_get_request_latency_uses_azure_openai_time_to_last_byte_metric(monkeypatch) -> None:
-    result = SimpleNamespace(
-        metrics=[
-            SimpleNamespace(
-                timeseries=[
-                    SimpleNamespace(data=[SimpleNamespace(average=1.5)])
-                ]
-            )
-        ]
-    )
-    client = object.__new__(AzureMetricsClient)
-    client.resource_id = "/subscriptions/test/resourceGroups/test/providers/test/resource"
-    fake_client = _FakeMetricsClient(result)
-    client._client = fake_client
-
-    assert client.get_request_latency(timedelta(hours=1)) == 1.5
-    assert fake_client.arguments[1]["metric_names"] == ["AzureOpenAITTLTInMS"]
-
-
 def test_get_model_metrics_groups_output_tokens_and_latency_by_model() -> None:
     output_result = SimpleNamespace(metrics=[SimpleNamespace(timeseries=[
         SimpleNamespace(
@@ -177,11 +175,11 @@ def test_get_model_metrics_groups_output_tokens_and_latency_by_model() -> None:
     latency_result = SimpleNamespace(metrics=[SimpleNamespace(timeseries=[
         SimpleNamespace(
             metadata_values=[SimpleNamespace(name="ModelName", value="gpt-4o")],
-            data=[SimpleNamespace(average=1.0), SimpleNamespace(average=2.0)],
+            data=[SimpleNamespace(average=1000.0), SimpleNamespace(average=2000.0)],
         ),
         SimpleNamespace(
             metadata_values=[SimpleNamespace(name="ModelName", value="gpt-4o-mini")],
-            data=[SimpleNamespace(average=0.5)],
+            data=[SimpleNamespace(average=500.0)],
         ),
     ])])
 
@@ -217,11 +215,11 @@ def test_get_model_metrics_uses_model_deployment_name_dimension() -> None:
     latency_result = SimpleNamespace(metrics=[SimpleNamespace(timeseries=[
         SimpleNamespace(
             metadata_values=[SimpleNamespace(name="ModelDeploymentName", value="gpt-5.4-mini")],
-            data=[SimpleNamespace(average=1.0)],
+            data=[SimpleNamespace(average=1000.0)],
         ),
         SimpleNamespace(
             metadata_values=[SimpleNamespace(name="ModelDeploymentName", value="gpt-5-mini")],
-            data=[SimpleNamespace(average=0.5)],
+            data=[SimpleNamespace(average=500.0)],
         ),
     ])])
 
@@ -257,11 +255,11 @@ def test_get_model_metrics_reads_dimension_values_shape() -> None:
     latency_result = SimpleNamespace(metrics=[SimpleNamespace(timeseries=[
         SimpleNamespace(
             dimension_values={"ModelName": "gpt-5.4-mini"},
-            data=[SimpleNamespace(average=1.0)],
+            data=[SimpleNamespace(average=1000.0)],
         ),
         SimpleNamespace(
             dimensions={"ModelName": "gpt-5-mini"},
-            data=[SimpleNamespace(average=0.5)],
+            data=[SimpleNamespace(average=500.0)],
         ),
     ])])
 

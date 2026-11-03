@@ -14,6 +14,7 @@ class AzureMetricsClient:
 
     OUTPUT_TOKENS_METRIC = "OutputTokens"
     REQUEST_LATENCY_METRIC = "AzureOpenAITTLTInMS"
+    MILLISECONDS_PER_SECOND = 1000.0
     PER_MODEL_FILTER = (
         "ModelName eq '*' and ModelDeploymentName eq '*' and ModelVersion eq '*'"
     )
@@ -57,6 +58,11 @@ class AzureMetricsClient:
                 for value in series.data:
                     selected_value = value.total if aggregation == MetricAggregationType.TOTAL else value.average
                     if selected_value is not None:
+                        print(
+                            f"Azure Monitor raw metric value: metric={metric_name!r}, "
+                            f"aggregation={aggregation!r}, value={selected_value!r}",
+                            flush=True,
+                        )
                         values.append(float(selected_value))
         return values
 
@@ -126,7 +132,9 @@ class AzureMetricsClient:
                 model_name = self._model_name(series)
                 if model_name:
                     latency_by_model[model_name].extend(
-                        float(point.average) for point in series.data if point.average is not None
+                        float(point.average) / self.MILLISECONDS_PER_SECOND
+                        for point in series.data
+                        if point.average is not None
                     )
         return {
             model_name: {
@@ -147,7 +155,7 @@ class AzureMetricsClient:
 
     def get_request_latency(self, timespan: timedelta) -> float | None:
         values = self._get_metric_values(self.REQUEST_LATENCY_METRIC, MetricAggregationType.AVERAGE, timespan)
-        return values[-1] if values else None
+        return values[-1] / self.MILLISECONDS_PER_SECOND if values else None
 
     def get_response_model(self, timespan: timedelta) -> str | None:
         result = self._client.query_resource(
