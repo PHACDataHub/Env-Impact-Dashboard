@@ -200,7 +200,7 @@ if estimation_mode == "Endpoint estimate":
     st.subheader("Endpoint estimate")
     endpoint_runtime = st.selectbox("Endpoint type", options=["azure", "databricks"], index=0)
     endpoint_period_days = st.selectbox(
-        "Azure Monitor period",
+        "Metrics period",
         options=[1, 7, 14, 30, 60, 90, 120],
         format_func=lambda days: f"{days} day{'s' if days != 1 else ''}",
     )
@@ -208,15 +208,16 @@ if estimation_mode == "Endpoint estimate":
     endpoint_metrics = {}
     endpoint_model_metrics = {}
     try:
-        azure_metrics = get_azure_metrics_client()
+        metrics_client = get_azure_metrics_client()
         endpoint_metrics = {
-            "response_model": azure_metrics.get_response_model(endpoint_timespan),
-            "output_tokens": azure_metrics.get_output_tokens(endpoint_timespan),
-            "request_latency": azure_metrics.get_request_latency(endpoint_timespan),
+            "response_model": metrics_client.get_response_model(endpoint_timespan),
+            "output_tokens": metrics_client.get_output_tokens(endpoint_timespan),
+            "request_latency": metrics_client.get_request_latency(endpoint_timespan),
         }
-        endpoint_model_metrics = azure_metrics.get_model_metrics(endpoint_timespan)
+        endpoint_model_metrics = metrics_client.get_model_metrics(endpoint_timespan)
     except Exception as exc:  # pragma: no cover - exercised by deployment configuration
-        st.error(f"Unable to read Azure Monitor metrics: {exc}")
+        source_name = "Azure Monitor" if endpoint_runtime == "azure" else "Databricks AI Gateway"
+        st.error(f"Unable to read {source_name} metrics: {exc}")
     endpoint_payload = ParsedInferencePayload(
         runtime_vendor=endpoint_runtime,
         response_model=endpoint_metrics.get("response_model"),
@@ -230,7 +231,7 @@ if estimation_mode == "Endpoint estimate":
             "response_model": model_name,
             "output_tokens": model_metrics["output_tokens"],
             "latency_seconds": model_metrics["request_latency"],
-            "response_provider_hint": "openai",
+            "response_provider_hint": "openai" if endpoint_runtime == "azure" else "anthropic",
         })
         resolution = resolve_ecologits_target(model_payload, catalog_index)
         preview_requests.append({
@@ -249,13 +250,13 @@ if estimation_mode == "Endpoint estimate":
             "request": None,
             "resolution_status": "unresolved",
             "resolution_messages": [
-                "No per-model Azure Monitor series were returned, so there is no model-specific request body to preview."
+                f"No per-model {('Azure Monitor' if endpoint_runtime == 'azure' else 'Databricks AI Gateway')} series were returned, so there is no model-specific request body to preview."
             ],
             "aggregate_metrics": {
                 "response_model": endpoint_payload.response_model,
                 "output_tokens": endpoint_payload.output_tokens,
                 "request_latency": endpoint_payload.latency_seconds,
-                "provider": "openai",
+                "provider": "openai" if endpoint_runtime == "azure" else "anthropic",
                 "electricity_mix_zone": os.getenv("ELECTRICITY_MIX_ZONE"),
             },
         }]
@@ -271,19 +272,21 @@ if estimation_mode == "Endpoint estimate":
 if estimation_mode == "Endpoint estimate" and estimate_clicked:
     validation_errors: list[str] = []
     if not endpoint_model_metrics and endpoint_payload.output_tokens is None:
-        validation_errors.append("No Azure Monitor model metrics were available.")
+        validation_errors.append(
+            f"No {('Azure Monitor' if endpoint_runtime == 'azure' else 'Databricks AI Gateway')} model metrics were available."
+        )
 
     if validation_errors:
         for validation_error in validation_errors:
             st.error(validation_error)
     elif not endpoint_model_metrics:
         st.warning(
-            "Azure Monitor returned aggregate output tokens but no per-model series. "
+            f"{('Azure Monitor' if endpoint_runtime == 'azure' else 'Databricks AI Gateway')} returned aggregate output tokens but no per-model series. "
             "No model-specific EcoLogits estimate was sent."
         )
     elif not endpoint_payload.output_tokens:
         st.warning(
-            "Azure Monitor returned zero output tokens. The normalized payload "
+            f"{('Azure Monitor' if endpoint_runtime == 'azure' else 'Databricks AI Gateway')} returned zero output tokens. The normalized payload "
             "is shown above, but no EcoLogits request was sent."
         )
     else:
@@ -300,12 +303,12 @@ if estimation_mode == "Endpoint estimate" and estimate_clicked:
                     })
                     # Azure endpoint models are Azure OpenAI models.
                     model_payload = model_payload.model_copy(
-                        update={"response_provider_hint": "openai"}
+                        update={"response_provider_hint": "openai" if endpoint_runtime == "azure" else "anthropic"}
                     )
                     resolution = resolve_ecologits_target(model_payload, catalog_index)
                     if resolution.eco_provider is None or resolution.eco_model_name is None:
                         st.warning(
-                            f"Could not map Azure model '{model_name}' to an EcoLogits model: "
+                            f"Could not map {endpoint_runtime} model '{model_name}' to an EcoLogits model: "
                             + "; ".join(resolution.messages)
                         )
                         continue
@@ -334,7 +337,10 @@ if estimation_mode == "Endpoint estimate" and estimate_clicked:
                     store.append(impact_record)
             if impact_records:
                 st.session_state["latest_record"] = impact_records[-1].model_dump(mode="json")
-            st.success(f"Azure endpoint impact estimated for {len(impact_records)} model(s) and saved.")
+            st.success(
+                f"{endpoint_runtime.capitalize()} endpoint impact estimated for "
+                f"{len(impact_records)} model(s) and saved."
+            )
         except httpx.HTTPStatusError as exc:
             st.error(f"EcoLogits request failed: {exc.response.text}")
         except httpx.HTTPError as exc:
